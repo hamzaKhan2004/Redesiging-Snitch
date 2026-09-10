@@ -11,114 +11,21 @@ export async function createProduct(req, res) {
             message: "Only sellers can create products"
         })
     }
-
-    const { title, description, price: { amount, currency }, categories, sizes } = req.body
+    const {
+        title,
+        description,
+        price = {},
+        categories,
+        sizes
+    } = req.body;
+    const { amount, currency } = price;
 
     const errors = []
 
-    if (!title) {
-        errors.push({
-            field: "title",
-            message: "Title is required"
-        })
-    }
-
-    if (title && (title.length < 3 || title.length > 100)) {
-        errors.push({
-            field: "title",
-            message: "Title must be between 3 and 100 characters"
-        })
-    }
-
-    if (!description) {
-        errors.push({
-            field: "description",
-            message: "Description is required"
-        })
-    }
-
-    if (description && (description.length < 10 || description.length > 1000)) {
-        errors.push({
-            field: "description",
-            message: "Description must be between 10 and 1000 characters"
-        })
-    }
-
-    if (!amount) {
-        errors.push({
-            field: "price.amount",
-            message: "Price amount is required"
-        })
-    }
-
-    if (amount && amount < 0) {
-        errors.push({
-            field: "price.amount",
-            message: "Price amount must be a positive number"
-        })
-    }
-
-    if (!currency) {
-        errors.push({
-            field: "price.currency",
-            message: "Price currency is required"
-        })
-    }
-
-    if (currency && !["USD", "EUR", "CAD", "INR"].includes(currency)) {
-        errors.push({
-            field: "price.currency",
-            message: "Price currency must be one of USD, EUR, CAD, INR"
-        })
-    }
-
-    if (!categories || !Array.isArray(categories) || categories.length === 0) {
-        errors.push({
-            field: "categories",
-            message: "At least one category is required"
-        })
-    } else {
-        categories.forEach((category, index) => {
-            if (!category || typeof category !== "string") {
-                errors.push({
-                    field: `categories[${index}]`,
-                    message: "Category must be a string"
-                })
-            }
-
-            if (category.length < 3 || category.length > 50) {
-                errors.push({
-                    field: `${category}`,
-                    message: "Category must be between 3 and 50 characters"
-                })
-            }
-        })
-    }
-
-    if (!sizes || !Array.isArray(sizes) || sizes.length === 0) {
-        errors.push({
-            field: "sizes",
-            message: "At least one size is required"
-        })
-    } else {
-        sizes.forEach((sizeObj, index) => {
-            if (!sizeObj.size || !["XS", "S", "M", "L", "XL", "XXL"].includes(sizeObj.size)) {
-                errors.push({
-                    field: `sizes[${index}].size`,
-                    message: "Size must be one of XS, S, M, L, XL, XXL"
-                })
-            }
-            if (sizeObj.stock === undefined || sizeObj.stock < 0) {
-                errors.push({
-                    field: `sizes[${index}].stock`,
-                    message: "Stock must be a positive number"
-                })
-            }
-        })
-    }
 
     const files = req.files;
     console.log(files, req.files);
+
 
     if (!files || files.length === 0) {
         errors.push({
@@ -144,16 +51,23 @@ export async function createProduct(req, res) {
     //     urls.push(url);
     // }
 
-    const urls = await Promise.all(req.files.map(async (file) => {
-        const fileName = `${Date.now()}-${file.originalname}`;
-        const response = await uploadFile(file.buffer.toString("base64"), fileName);
+    const urls = await Promise.all(
+        req.files.map(async (file, index) => {
+            const fileName = `${Date.now()}-${index}-${file.originalname}`;
 
-        return {
-            imageKitId: response.imageKitId,
-            url: response.url,
-            order: response.order,
-        };
-    }));
+            const response = await uploadFile(
+                file.buffer.toString("base64"),
+                fileName
+            );
+
+            return {
+                imageKitId: response.imageKitId,
+                url: response.url,
+                order: index,
+            };
+        })
+    );
+
 
     const product = await productModel.create({
         title,
@@ -170,6 +84,90 @@ export async function createProduct(req, res) {
 
     return res.status(201).json({
         message: "Product created successfully",
+        data: {
+            product: {
+                id: product._id,
+                title: product.title,
+                description: product.description,
+                price: product.price,
+                categories: product.categories,
+                images: product.images,
+                seller: product.seller,
+                sizes: product.sizes,
+                isPublished: product.isPublished
+            }
+        }
+    })
+
+}
+
+export async function updateProduct(req, res) {
+
+    const user = req.user
+
+    if (user.role !== "seller") {
+        return res.status(403).json({
+            message: "Only sellers can update products"
+        })
+    }
+
+    const { id } = req.params
+
+    const product = await productModel.findOne({
+        _id: id,
+    })
+
+    if (!product) {
+        return res.status(404).json({
+            message: "Product not found"
+        })
+    }
+
+    if (product.seller.toString() !== user.id) {
+        return res.status(403).json({
+            message: "You are not authorized to update this product"
+        })
+    }
+
+    const numberOfImages = product.images.length + (req.files ? req.files.length : 0)
+
+    if (numberOfImages > 5) {
+        return res.status(400).json({
+            message: "You can upload a maximum of 5 images"
+        })
+    }
+
+    if (req.files && req.files.length > 0) {
+        const urls = await Promise.all(req.files.map(async (file, index) => {
+
+            const fileName = `${Date.now()}-${file.originalname}`
+            const response = await uploadFile(file.buffer.toString("base64"), fileName)
+
+            return {
+                url: response.url,
+                imagekitId: response.fileId,
+                order: product.images.length + index + 1,
+            }
+            //  imageKitId: response.imageKitId,
+            //     url: response.url,
+            //     order: index,
+        }))
+
+        product.images.push(...urls)
+    }
+
+    const { title, description, price, categories, sizes } = req.body
+
+    if (title) product.title = title
+    if (description) product.description = description
+    if (price) product.price = price
+    if (categories) product.categories = categories
+    if (sizes) product.sizes = sizes
+
+    await product.save()
+
+    return res.status(200).json({
+        message: "Product updated successfully",
         data: {
             product: {
                 id: product._id,
